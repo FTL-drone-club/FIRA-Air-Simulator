@@ -2,15 +2,25 @@ from typing import Any, Tuple, List
 import cv2
 import numpy as np
 import itertools
+import math
 
 from geometry import *
 
 
 # Потом прокомментирую
-MIN_GATES_DIAGONAL_NON_PINK_PERCENTAGE = 0.75
+MIN_GATES_DIAGONAL_NON_PINK_PERCENTAGE = 0.5
 
 # Тоже потом
 MIN_GATES_EDGES_PINK_PERCENTAGE = 0.09
+
+# Не поверите, но опять потом
+CUTTING_GATES_COEFFICIENT = 0.95
+
+# Толщина линии на маске для наложения на картинку для подсчета доли розового
+LINE_MASK_THICKNESS = 3
+
+# Опять потом
+LINE_MASK_OFFSET = 3
 
 
 def get_mask(
@@ -85,15 +95,97 @@ def draw_polygon(image: Any, polygon: List[Point], color: Tuple[int, int, int] =
     for i in range(len(polygon)):
         cv2.line(image, (polygon[i].x, polygon[i].y), (polygon[(i + 1) % len(polygon)].x, polygon[(i + 1) % len(polygon)].y), color, 3)
 
+def reduce_gates(old_polygon: List[Point]) -> List[Point]:
+    result: List[Point] = []
+
+    gates_center = polygon_center(old_polygon)
+
+    for curr_point in old_polygon:
+        result.append(Point(
+            math.floor(gates_center.x + (curr_point.x - gates_center.x) * CUTTING_GATES_COEFFICIENT),
+            math.floor(gates_center.y + (curr_point.y - gates_center.y) * CUTTING_GATES_COEFFICIENT)
+        ))
+
+    return result
+
+def get_color_percentage_in_line(
+        image: cv2.Mat,
+        point1: Point,
+        point2: Point,
+        lower: np.array = np.array([140, 0, 0]),
+        upper: np.array = np.array([200, 255, 255])
+) -> float:
+    image_height, image_width, _ = image.shape
+
+    # Строим максу для определения розовых пикселей на изображении
+    pink_mask = get_mask(image, lower, upper)
+
+    line_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+
+    # Рисуем линию толщиной
+    cv2.line(
+        line_mask,
+        (point1.x, point1.y),
+        (point2.x, point2.y),
+        (255, 255, 255), LINE_MASK_THICKNESS
+    )
+
+    # Находим пересечение с розовыми пикселями
+    intersection = cv2.bitwise_and(line_mask, pink_mask)
+
+    # Считаем количество розовых пикселей на линии
+    all_pixels_count = cv2.countNonZero(line_mask)
+    pink_pixels_count = cv2.countNonZero(intersection)
+    if all_pixels_count == 0:
+        return 0
+
+    return pink_pixels_count / all_pixels_count
+
+def get_max_color_percentage_in_line_with_offset(
+        image: cv2.Mat,
+        point1: Point,
+        point2: Point,
+        lower: np.array = np.array([140, 0, 0]),
+        upper: np.array = np.array([200, 255, 255])
+) -> float:
+    points1 = [
+        # Point(point1.x, point1.y),
+        Point(point1.x - LINE_MASK_OFFSET, point1.y),
+        Point(point1.x + LINE_MASK_OFFSET, point1.y),
+        Point(point1.x, point1.y - LINE_MASK_OFFSET),
+        Point(point1.x, point1.y + LINE_MASK_OFFSET),
+    ]
+
+    points2 = [
+        # Point(point2.x, point2.y),
+        Point(point2.x - LINE_MASK_OFFSET, point2.y),
+        Point(point2.x + LINE_MASK_OFFSET, point2.y),
+        Point(point2.x, point2.y - LINE_MASK_OFFSET),
+        Point(point2.x, point2.y + LINE_MASK_OFFSET),
+    ]
+
+    max_percentage = 0
+
+    for i in range(len(points1)):
+        max_percentage = max(
+            max_percentage,
+            get_color_percentage_in_line(
+                image,
+                points1[i],
+                points2[i],
+                lower,
+                upper
+            )
+        )
+
+    return max_percentage
+
 def get_the_biggest_gates(
         image: Any,
         lower: np.array = np.array([140, 0, 0]),
         upper: np.array = np.array([200, 255, 255])
 ) -> List[Point] or None:
     image_height, image_width, _ = image.shape
-
-    # Строим максу для определения розовых пикселей на изображении
-    pink_mask = get_mask(image, lower, upper)
 
     # Ищем наибольший многоугольник
     biggest_polygon = get_the_biggest_polygon_in_image(image)
@@ -104,10 +196,6 @@ def get_the_biggest_gates(
     image_view = image.copy()
     draw_polygon(image_view, biggest_polygon)
 
-    # # Если ворота это и так четырехугольник, то возвращаем его без изменений
-    # if len(biggest_polygon) == 4:
-    #     return biggest_polygon
-
     n = len(biggest_polygon)
     graph: List[List[float]] = []
 
@@ -117,41 +205,10 @@ def get_the_biggest_gates(
             buffer.append(None)
         graph.append(buffer)
 
-    line_mask = np.zeros((image_height, image_width), dtype=np.uint8)
     for i in range(n):
         for j in range(n):
             if i != j:
-                line_mask.fill(0)
-
-                # Рисуем линию толщиной
-                cv2.line(
-                    line_mask,
-                    (biggest_polygon[i].x, biggest_polygon[i].y),
-                    (biggest_polygon[j].x, biggest_polygon[j].y),
-                    (255, 255, 255), 3
-                )
-
-                # white_mask = get_mask(line_mask, np.array([0, 0, 200]), np.array([180, 30, 255]))
-
-                # Находим пересечение с розовыми пикселями
-                intersection = cv2.bitwise_and(line_mask, pink_mask)
-
-                # Считаем количество розовых пикселей на линии
-                all_pixels_count = cv2.countNonZero(line_mask)
-                pink_pixels_count = cv2.countNonZero(intersection)
-                graph[i][j] = pink_pixels_count / all_pixels_count
-                # if pink_pixels_count / all_pixels_count >= 0.5:
-                #     # graph[i][j] = pink_pixels_count / all_pixels_count
-                #     graph[i][j] = pink_pixels_count
-                cv2.line(
-                    image_view,
-                    (biggest_polygon[i].x, biggest_polygon[i].y),
-                    (biggest_polygon[j].x, biggest_polygon[j].y),
-                    (255 * graph[i][j], 0, 0), 3
-                )
-                # else:
-                #     graph[i][j] = 0
-
+                graph[i][j] = get_max_color_percentage_in_line_with_offset(image, biggest_polygon[i], biggest_polygon[j], lower, upper)
             else:
                 graph[i][j] = 1
 
@@ -179,8 +236,8 @@ def get_the_biggest_gates(
                             graph[indexes[2]][indexes[3]] * \
                             graph[indexes[3]][indexes[0]]
 
-        # if curr_similarity > max_similarity and diagonal_non_pink_percentage > MIN_GATES_DIAGONAL_NON_PINK_PERCENTAGE:
-        if curr_similarity > max_similarity:
+        if curr_similarity > max_similarity and diagonal_non_pink_percentage > MIN_GATES_DIAGONAL_NON_PINK_PERCENTAGE:
+        # if curr_similarity > max_similarity:
             result_diagonal_non_pink_percentage = diagonal_non_pink_percentage
             max_similarity = curr_similarity
             max_gates = curr_polygon
