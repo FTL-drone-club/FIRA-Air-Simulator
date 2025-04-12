@@ -4,12 +4,22 @@ from threading import Thread
 from functools import cmp_to_key
 import rospy
 import math
+import time
+from typing import Any, Tuple, List
 
 from drone import Drone
 from drone_exceptions import DroneIsNotFlight, ProcessIsAlreadyStarted, ProcessIsNotStartedYet
 import gates
 import geometry
 import pid
+from psutil import process_iter
+
+# Константы для скорости и точности управления дроном
+Z_ANGLE_ACCURACY = 20
+Z_ACCURACY = 0.1
+SPEED = 0.6
+
+MIN_AREA_FOR_FLIGHT_FORWARD = 0.06
 
 
 class CenterGates(object):
@@ -23,18 +33,14 @@ class CenterGates(object):
         # Объект дрона для управления
         self._drone: Drone = drone
 
-        # PID-контроллер для управления угловой скоростью вокруг оси Z (yaw)
-        # Используется для поворота дрона так, чтобы ворота оказались по центру по горизонтали
         self._yaw_pid = pid.PID(
-            Kp=0.0025,
-            Ki=0.001,
-            Kd=0.0006,
+            Kp=0.008,
+            Ki=0.01,
+            Kd=0.007,
             setpoint=0,  # Цель — центр кадра по оси X
             output_limits=(-20, 20),  # Ограничение выходного сигнала
         )
 
-        # PID-контроллер для управления движением по оси Y (влево/вправо)
-        # Используется для коррекции бокового смещения дрона при заходе на ворота
         self._y_pid = pid.PID(
             Kp=0.002,
             Ki=0.002,
@@ -43,24 +49,12 @@ class CenterGates(object):
             output_limits=(-1, 1),
         )
 
-        # PID-контроллер для поворота дрона относительно оси Y, если ворота наклонены
-        # Используется для корректировки наклона дрона при пролете ворот
-        self._y_rotation_pid = pid.PID(
-            Kp=0.00001,
-            Ki=0.00001,
-            Kd=0.00003,
-            setpoint=0,  # Цель — одинаковая высота левых и правых вершин ворот
-            output_limits=(-0.5, 0.5),
-        )
-
-        # PID-контроллер для управления движением по оси Z (вверх/вниз)
-        # Используется для выравнивания дрона по высоте относительно центра ворот
         self._z_pid = pid.PID(
-            Kp=0.0004,
-            Ki=0.0006,
-            Kd=0.0003,
+            Kp=0.04,
+            Ki=0.06,
+            Kd=0.03,
             setpoint=0,  # Цель — центр кадра по оси Y
-            output_limits=(-4, 4),
+            output_limits=(-3, 3),
         )
 
     def start(self):
@@ -93,11 +87,14 @@ class CenterGates(object):
             _the_biggest_gates = gates.get_the_biggest_gates(self._drone.front_image)
 
             if _the_biggest_gates is None:
-                print("[Warning] CenterGates: Gates is not detected", file=sys.stderr)
+                print("[Warning] Gates is not detected", file=sys.stderr)
                 continue
 
             # Находим центр найденных ворот
             _the_biggest_gates_center = geometry.polygon_center(_the_biggest_gates)
+
+            gates_area = geometry.polygon_area(_the_biggest_gates)
+            total_area = 640 * 480
 
             # Центр изображения (центр кадра камеры)
             _front_image_height, _front_image_width, _front_image_channels = self._drone.front_image.shape
@@ -116,26 +113,33 @@ class CenterGates(object):
                 _the_biggest_gates_center.x - _front_image_center.x
             )
 
-            # Управление движением по оси Y (влево/вправо) простым способом
-            # Если ворота не являются четырехугольником
-            _new_y_simple_value = 0  # Пока не используется
+            # Считаем углы поворота ворот
+            sorted_biggest_gates: List[geometry.Point] = geometry.sort_vertexes(_the_biggest_gates)
+            gates_angles = gates.get_gates_angles(sorted_biggest_gates)
 
-            # Если ворота — четырехугольник (есть все 4 вершины)
-            # Управляем движением по Y, учитывая наклон ворот
-            vertexes = _the_biggest_gates
-            sorted(vertexes, key=cmp_to_key(lambda item1, item2: item1.x - item2.x))
+            print(gates_area / total_area)
+            if gates_area / total_area > MIN_AREA_FOR_FLIGHT_FORWARD and abs(gates_angles[1]) < Z_ANGLE_ACCURACY:
+                print("FORWARD... ", end="\t")
+                self._drone.set_speed(
+                    linear_x=SPEED,
+                    linear_y = 0,
+                    linear_z = -0.2,
+                    angular_z = 0,
+                )
+                time.sleep(1.5)
+                self._drone.set_speed(linear_x=0)
+                print("OK")
+                continue
+
+            if abs(gates_angles[1]) < Z_ANGLE_ACCURACY and _the_biggest_gates_center.y - _front_image_center.y < Z_ACCURACY:
+                self._drone.set_speed(linear_x=SPEED)
+            else:
+                self._drone.set_speed(linear_x=SPEED / 4)
 
             # Сравниваем разницу по Y между левой и правой стороной ворот
-            _new_y_rotate_value = self._y_pid.update(
-                math.fabs(vertexes[0].y - vertexes[1].y)
-                - math.fabs(vertexes[2].y - vertexes[3].y)
-            )
+            _new_y_value = self._y_pid.update(-gates_angles[1])
 
-            # Выбираем нужный способ управления по Y
-            if len(_the_biggest_gates) == 4:
-                _new_y_value = _new_y_rotate_value
-            else:
-                _new_y_value = _new_y_simple_value
+            _new_y_value = _new_y_value
 
             # Устанавливаем рассчитанные скорости для дрона
             self._drone.set_speed(
