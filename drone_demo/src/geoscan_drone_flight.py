@@ -11,17 +11,20 @@ if __name__ == '__main__':
     print("Taking off...", end="\t\t")
     drone.wait_state(CallbackEvent.ENGINES_STARTED)
     drone.takeoff()
-    time.sleep(1)
     print("OK")
 
     drone.wait_state(CallbackEvent.TAKEOFF_COMPLETE)
+    rospy.sleep(1)
+
     drone.start_move()
     print("Forward")
     drone.set_speed(linear_x=SPEED)
-    time.sleep(1)
+    rospy.sleep(1.5)
     print("Backward")
-    drone.set_speed(linear_x=SPEED)
-    time.sleep(1)
+    drone.set_speed(linear_x=0, linear_y=-SPEED)
+    rospy.sleep(2.5)
+
+    drone.set_speed(linear_x=0)
     drone.stop_move()
 
     print("Landing...", end="\t\t")

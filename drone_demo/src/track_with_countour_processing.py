@@ -62,16 +62,15 @@ if __name__ == '__main__':
             _result_image = drone.front_image.copy()  # Копия изображения для отрисовки результатов
 
             # Поиск самых больших ворот на изображении
-            _biggest_gates = gates.get_the_biggest_gates(drone.front_image)
+            # _biggest_gates = gates.get_the_biggest_gates(drone.front_image)
 
             # Если ворота найдены
-            if _biggest_gates is not None:
-                if len(_biggest_gates) != 4:
-                    print("ERROR")  # Ошибка, если найдено не 4 точки
-                else:
-                    sorted_biggest_gates: List[Point] = sort_vertexes(_biggest_gates)
-                    gates.draw_polygon(_result_image, sorted_biggest_gates)
-                    print(gates.get_gates_angles(sorted_biggest_gates))
+            # if _biggest_gates is not None:
+            #     if len(_biggest_gates) != 4:
+            #         print("ERROR")  # Ошибка, если найдено не 4 точки
+            #     else:
+            #         sorted_biggest_gates: List[Point] = sort_vertexes(_biggest_gates)
+            #         gates.draw_polygon(_result_image, sorted_biggest_gates)
 
             # Отображаем изображения
             cv2.imshow('Result', _result_image)  # Результат с отрисованными воротами
